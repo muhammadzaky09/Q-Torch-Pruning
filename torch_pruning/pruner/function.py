@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import brevitas.nn as qnn
 from copy import deepcopy
 from abc import ABC, abstractclassmethod
 from typing import Sequence, Tuple
@@ -32,6 +33,14 @@ __all__=[
     'prune_groupnorm_in_channels',
     'prune_instancenorm_out_channels',
     'prune_instancenorm_in_channels',
+    'prune_quant_conv_out_channels',
+    'prune_quant_conv_in_channels',
+    'prune_quant_linear_out_channels',
+    'prune_quant_linear_in_channels',
+    'prune_quant_relu_out_channels',
+    'prune_quant_relu_in_channels',
+    'prune_quant_identity_out_channels',
+    'prune_quant_identity_in_channels',
 ]
 
 class BasePruningFunc(ABC):
@@ -222,7 +231,141 @@ class BatchnormPruner(BasePruningFunc):
     def get_in_channels(self, layer):
         return layer.num_features
 
+class QuantConvPruner(BasePruningFunc):
+    TARGET_MODULES = ops.TORCH_QUANT_CONV
 
+    def prune_out_channels(self, layer: qnn.QuantConv2d, idxs: Sequence[int]) -> nn.Module:
+        keep_idxs = list(set(range(layer.out_channels)) - set(idxs))
+        keep_idxs.sort()
+        layer.out_channels = layer.out_channels - len(idxs)
+        
+        if not layer.transposed:
+            layer.weight = self._prune_parameter_and_grad(layer.weight, keep_idxs, 0)
+        else:
+            layer.weight = self._prune_parameter_and_grad(layer.weight, keep_idxs, 1)
+        
+        if layer.bias is not None:
+            layer.bias = self._prune_parameter_and_grad(layer.bias, keep_idxs, 0)
+        
+        # Handle quantization parameters
+        if hasattr(layer, 'weight_scaling_impl') and hasattr(layer.weight_scaling_impl, 'scaling_init'):
+            if hasattr(layer.weight_scaling_impl.scaling_init, 'tensor'):
+                scaling_tensor = layer.weight_scaling_impl.scaling_init.tensor
+                if scaling_tensor is not None and scaling_tensor.size(0) == layer.out_channels + len(idxs):
+                    layer.weight_scaling_impl.scaling_init.tensor = torch.nn.Parameter(
+                        torch.index_select(scaling_tensor, 0, torch.LongTensor(keep_idxs).to(scaling_tensor.device))
+                    )
+        
+        # Update bit-width parameters if they're per-channel
+        if hasattr(layer, 'weight_bit_width_impl') and hasattr(layer.weight_bit_width_impl, 'bit_width_init'):
+            if hasattr(layer.weight_bit_width_impl.bit_width_init, 'tensor'):
+                bit_width_tensor = layer.weight_bit_width_impl.bit_width_init.tensor
+                if bit_width_tensor is not None and bit_width_tensor.size(0) == layer.out_channels + len(idxs):
+                    layer.weight_bit_width_impl.bit_width_init.tensor = torch.nn.Parameter(
+                        torch.index_select(bit_width_tensor, 0, torch.LongTensor(keep_idxs).to(bit_width_tensor.device))
+                    )
+        
+        return layer
+
+    def prune_in_channels(self, layer: qnn.QuantConv2d, idxs: Sequence[int]) -> nn.Module:
+        keep_idxs = list(set(range(layer.in_channels)) - set(idxs))
+        keep_idxs.sort()
+        layer.in_channels = layer.in_channels - len(idxs)
+        
+        if layer.groups > 1:
+            if layer.groups == layer.in_channels + len(idxs):  # Depthwise convolution
+                layer.groups = layer.groups - len(idxs)
+                keep_idxs = keep_idxs[:len(keep_idxs)//layer.groups]
+        
+        if not layer.transposed:
+            layer.weight = self._prune_parameter_and_grad(layer.weight, keep_idxs, 1)
+        else:
+            layer.weight = self._prune_parameter_and_grad(layer.weight, keep_idxs, 0)
+            
+        return layer
+
+    def get_out_channels(self, layer):
+        return layer.out_channels
+
+    def get_in_channels(self, layer):
+        return layer.in_channels
+    
+    def get_in_channel_groups(self, layer):
+        return layer.groups
+    
+    def get_out_channel_groups(self, layer):
+        return layer.groups
+
+
+class QuantLinearPruner(BasePruningFunc):
+    TARGET_MODULES = ops.TORCH_QUANT_LINEAR
+    
+    def prune_out_channels(self, layer: qnn.QuantLinear, idxs: Sequence[int]) -> nn.Module:
+        keep_idxs = list(set(range(layer.out_features)) - set(idxs))
+        keep_idxs.sort()
+        layer.out_features = layer.out_features - len(idxs)
+        
+        layer.weight = self._prune_parameter_and_grad(layer.weight, keep_idxs, 0)
+        
+        if layer.bias is not None:
+            layer.bias = self._prune_parameter_and_grad(layer.bias, keep_idxs, 0)
+            
+        # Handle quantization parameters
+        if hasattr(layer, 'weight_scaling_impl') and hasattr(layer.weight_scaling_impl, 'scaling_init'):
+            if hasattr(layer.weight_scaling_impl.scaling_init, 'tensor'):
+                scaling_tensor = layer.weight_scaling_impl.scaling_init.tensor
+                if scaling_tensor is not None and scaling_tensor.size(0) == layer.out_features + len(idxs):
+                    layer.weight_scaling_impl.scaling_init.tensor = torch.nn.Parameter(
+                        torch.index_select(scaling_tensor, 0, torch.LongTensor(keep_idxs).to(scaling_tensor.device))
+                    )
+        
+        return layer
+
+    def prune_in_channels(self, layer: qnn.QuantLinear, idxs: Sequence[int]) -> nn.Module:
+        keep_idxs = list(set(range(layer.in_features)) - set(idxs))
+        keep_idxs.sort()
+        layer.in_features = layer.in_features - len(idxs)
+        
+        layer.weight = self._prune_parameter_and_grad(layer.weight, keep_idxs, 1)
+        
+        return layer
+
+    def get_out_channels(self, layer):
+        return layer.out_features
+
+    def get_in_channels(self, layer):
+        return layer.in_features
+
+
+class QuantReLUPruner(BasePruningFunc):
+    TARGET_MODULES = ops.TORCH_QUANT_RELU
+    
+    def prune_out_channels(self, layer: qnn.QuantReLU, idxs: Sequence[int]) -> nn.Module:
+        return layer  # QuantReLU has no channel dimensions to prune
+
+    prune_in_channels = prune_out_channels  # Same implementation for both
+
+    def get_out_channels(self, layer):
+        return None  # No channel dimension
+
+    def get_in_channels(self, layer):
+        return None  # No channel dimension
+
+
+class QuantIdentityPruner(BasePruningFunc):
+    TARGET_MODULES = ops.TORCH_QUANT_IDENTITY
+    
+    def prune_out_channels(self, layer: qnn.QuantIdentity, idxs: Sequence[int]) -> nn.Module:
+        return layer  # QuantIdentity has no channel dimensions to prune
+
+    prune_in_channels = prune_out_channels  # Same implementation for both
+
+    def get_out_channels(self, layer):
+        return None  # No channel dimension
+
+    def get_in_channels(self, layer):
+        return None  # No channel dimension
+    
 class LayernormPruner(BasePruningFunc):
     TARGET_MODULES = ops.TORCH_LAYERNORM
 
@@ -495,6 +638,10 @@ PrunerBox = {
     ops.OPTYPE.LSTM: LSTMPruner(),
     ops.OPTYPE.GN: GroupNormPruner(),
     ops.OPTYPE.IN: InstanceNormPruner(),
+    ops.OPTYPE.QUANT_CONV: QuantConvPruner(),
+    ops.OPTYPE.QUANT_LINEAR: QuantLinearPruner(),
+    ops.OPTYPE.QUANT_RELU: QuantReLUPruner(),
+    ops.OPTYPE.QUANT_IDENTITY: QuantIdentityPruner(),
 }
 
 # Alias
@@ -506,6 +653,18 @@ prune_depthwise_conv_in_channels = PrunerBox[ops.OPTYPE.DEPTHWISE_CONV].prune_in
 
 prune_batchnorm_out_channels = PrunerBox[ops.OPTYPE.BN].prune_out_channels
 prune_batchnorm_in_channels = PrunerBox[ops.OPTYPE.BN].prune_in_channels
+
+prune_quant_conv_out_channels = PrunerBox[ops.OPTYPE.QUANT_CONV].prune_out_channels
+prune_quant_conv_in_channels = PrunerBox[ops.OPTYPE.QUANT_CONV].prune_in_channels
+
+prune_quant_linear_out_channels = PrunerBox[ops.OPTYPE.QUANT_LINEAR].prune_out_channels
+prune_quant_linear_in_channels = PrunerBox[ops.OPTYPE.QUANT_LINEAR].prune_in_channels
+
+prune_quant_relu_out_channels = PrunerBox[ops.OPTYPE.QUANT_RELU].prune_out_channels
+prune_quant_relu_in_channels = PrunerBox[ops.OPTYPE.QUANT_RELU].prune_in_channels
+
+prune_quant_identity_out_channels = PrunerBox[ops.OPTYPE.QUANT_IDENTITY].prune_out_channels
+prune_quant_identity_in_channels = PrunerBox[ops.OPTYPE.QUANT_IDENTITY].prune_in_channels
 
 prune_linear_out_channels = PrunerBox[ops.OPTYPE.LINEAR].prune_out_channels
 prune_linear_in_channels = PrunerBox[ops.OPTYPE.LINEAR].prune_in_channels

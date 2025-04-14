@@ -1,4 +1,5 @@
 import torch.nn as nn
+import brevitas.nn as qnn
 from enum import IntEnum
 
 class DummyMHA(nn.Module):
@@ -201,6 +202,10 @@ TORCH_LINEAR = nn.Linear
 TORCH_EMBED = nn.Embedding
 TORCH_PARAMETER = nn.Parameter
 TORCH_LSTM = nn.LSTM
+TORCH_QUANT_CONV = qnn.QuantConv2d 
+TORCH_QUANT_LINEAR = qnn.QuantLinear 
+TORCH_QUANT_RELU = qnn.QuantReLU
+TORCH_QUANT_IDENTITY = qnn.QuantIdentity
 try:
     TORCH_MHA = nn.MultiheadAttention
 except:
@@ -229,6 +234,10 @@ class OPTYPE(IntEnum):
     UNBIND = 17
     EXPAND = 18
     SLICE = 19
+    QUANT_CONV = 20  # Use the next available number
+    QUANT_LINEAR = 21
+    QUANT_RELU = 22
+    QUANT_IDENTITY = 23
 
 
 def module2type(module):
@@ -271,6 +280,14 @@ def module2type(module):
         return OPTYPE.EXPAND
     elif isinstance(module, _SliceOp):
         return OPTYPE.SLICE
+    elif isinstance(module, TORCH_QUANT_CONV):
+        return OPTYPE.QUANT_CONV
+    elif isinstance(module, TORCH_QUANT_LINEAR):
+        return OPTYPE.QUANT_LINEAR
+    elif  isinstance(module, TORCH_QUANT_RELU):
+        return OPTYPE.QUANT_RELU
+    elif isinstance(module, TORCH_QUANT_IDENTITY):
+        return OPTYPE.QUANT_IDENTITY
     else:
         return OPTYPE.ELEMENTWISE
 
@@ -280,6 +297,14 @@ def type2class(op_type):
         return TORCH_CONV
     elif op_type == OPTYPE.BN:
         return TORCH_BATCHNORM
+    elif op_type == OPTYPE.QUANT_CONV:
+        return TORCH_QUANT_CONV
+    elif op_type == OPTYPE.QUANT_LINEAR:
+        return TORCH_QUANT_LINEAR
+    elif op_type == OPTYPE.QUANT_RELU:
+        return TORCH_QUANT_RELU
+    elif op_type == OPTYPE.QUANT_IDENTITY:
+        return TORCH_QUANT_IDENTITY
     elif op_type == OPTYPE.PRELU:
         return TORCH_PRELU
     elif op_type == OPTYPE.LINEAR:

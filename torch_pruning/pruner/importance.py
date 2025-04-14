@@ -13,6 +13,8 @@ from collections import OrderedDict
 from ..utils.compute_mat_grad import ComputeMatGrad
 import random
 import warnings
+from collections import defaultdict
+from torch.utils.data import DataLoader, Subset
 
 __all__ = [
     # Base Class
@@ -22,6 +24,7 @@ __all__ = [
     "GroupMagnitudeImportance",
     "GroupTaylorImportance",
     "GroupHessianImportance",
+    "GroupActivationImportance",
 
     # Aliases
     "MagnitudeImportance",
@@ -53,7 +56,6 @@ class Importance(abc.ABC):
     @abc.abstractclassmethod
     def __call__(self, group: Group) -> torch.Tensor: 
         raise NotImplementedError
-
 
 class GroupMagnitudeImportance(Importance):
     """ A general implementation of magnitude importance. By default, it calculates the group L2-norm for each channel/dim.
@@ -268,7 +270,200 @@ class GroupMagnitudeImportance(Importance):
         group_imp = self._normalize(group_imp, self.normalizer)
         return group_imp
 
+class GroupActivationImportance:
+    def __init__(
+        self,
+        model,
+        dataset,
+        num_classes,
+        batch_size=64,  # Further reduced batch size
+        num_samples=64,  # Reduced samples
+        critical_percentile=10,
+    ):
+        self.model = model
+        self.dataset = dataset
+        self.num_classes = num_classes
+        self.batch_size = batch_size
+        self.num_samples = num_samples
+        self.critical_percentile = critical_percentile
+        
+        
 
+    def _get_class_samples(self, class_idx, n_samples):
+        class_indices = [i for i, (_, label) in enumerate(self.dataset) 
+                        if label == class_idx]
+        if not class_indices:
+            return []
+        return random.sample(class_indices, min(len(class_indices), n_samples))
+
+    def _safe_forward_pass(self, inputs):
+        """Safely perform forward pass with error handling"""
+        try:
+            with torch.no_grad():
+                _ = self.model(inputs)
+            return True
+        except RuntimeError as e:
+           
+
+            return False
+
+    def _get_critical_neurons(self, scores, percentile):
+        if scores.numel() == 0:
+            return torch.tensor([])
+        try:
+            threshold = torch.quantile(scores, 1 - percentile/100)
+            return torch.where(scores >= threshold)[0]
+        except RuntimeError:
+            return torch.tensor([])
+
+    def _create_hook(self, i, idxs, activation_cache):
+        def hook(mod, inp, out):
+            try:
+                # Handle quantized outputs
+                if hasattr(out, 'value'):
+                    out = out.value
+                    
+                # Get actual output dimensions
+                if out.dim() == 4:  # Conv layer
+                    num_channels = out.size(1)
+                else:  # Linear layer 
+                    num_channels = out.size(1)
+                    
+                # Filter invalid indices
+                valid_idxs = [idx for idx in idxs if idx < num_channels]
+                
+                if not valid_idxs:
+                    return
+                    
+                # Convert filtered idxs to tensor on same device 
+                idxs_tensor = torch.tensor(valid_idxs, device=out.device)
+                
+                # Calculate activations based on tensor dimensions
+                if out.dim() == 4:  # Conv layer
+                    act = out[:, idxs_tensor].abs().mean(dim=(0,2,3))
+                else:  # Linear layer
+                    act = out[:, idxs_tensor].abs().mean(dim=0)
+                    
+                # Keep on GPU instead of moving to CPU
+                activation_cache[i].append(act)
+                
+            except Exception as e:
+                print(f"Hook error in layer {i}: {str(e)}")
+                print(f"Output shape: {out.shape}, Attempted indices: {idxs}")
+        return hook
+    
+    def _reduce_group_importance(self, group_imp, group_idxs):
+        try:
+            if len(group_imp) == 0:
+                return None
+            
+            # Verify indices are valid    
+            max_sizes = [imp.size(0) for imp in group_imp]
+            valid_idxs = []
+            for idxs, max_size in zip(group_idxs, max_sizes):
+                valid_idxs.append([idx for idx in idxs if idx < max_size])
+                
+            if not all(valid_idxs):
+                return None
+                
+            max_idx = max(max(idxs) for idxs in valid_idxs if len(idxs) > 0)
+            reduced_imp = torch.zeros(max_idx + 1)
+            
+            n_imp = 0
+            for imp, root_idxs in zip(group_imp, valid_idxs):
+                if len(root_idxs) == 0:
+                    continue
+                idx_tensor = torch.tensor(root_idxs)
+                reduced_imp.index_add_(0, idx_tensor, imp)
+                n_imp += 1
+
+            if n_imp > 0:
+                reduced_imp /= n_imp
+                
+            if len(valid_idxs[0]) > 0:
+                return reduced_imp[valid_idxs[0]]
+                        
+            return None
+        except Exception as e:
+            print(f"Error in _reduce_group_importance: {str(e)}")
+            return None
+
+    @torch.no_grad()
+    def __call__(self, group):
+        activation_cache = defaultdict(list)
+        handles = []
+
+        try:
+            # Register hooks for each layer in group
+            for i, (dep, idxs) in enumerate(group):
+                module = dep.target.module
+                if hasattr(module, 'weight'):
+                    out_channels = module.weight.size(0)
+                    # Filter valid indices
+                    valid_idxs = [idx for idx in idxs if idx < out_channels]
+                    if valid_idxs:
+                        hook = self._create_hook(i, valid_idxs, activation_cache)
+                        handles.append(module.register_forward_hook(hook))
+
+            # Get network-level importance
+            net_samples = random.sample(range(len(self.dataset)), min(self.num_samples, len(self.dataset)))
+            net_subset = Subset(self.dataset, net_samples)
+            for inputs, _ in DataLoader(net_subset, batch_size=self.batch_size):
+                self.model(inputs)
+
+            layer_scores = []
+            # Process activations for each layer
+            for i, (dep, idxs) in enumerate(group):
+                if not activation_cache[i]:
+                    continue
+                    
+                # Average network-level activations
+                network_scores = torch.stack(activation_cache[i]).mean(0)
+                
+                # Get per-class activations
+                class_scores = {}
+                for class_idx in range(self.num_classes):
+                    activation_cache[i] = []
+                    class_samples = self._get_class_samples(class_idx, self.num_samples // self.num_classes)
+                    if class_samples:
+                        class_subset = Subset(self.dataset, class_samples)
+                        for inputs, _ in DataLoader(class_subset, batch_size=self.batch_size):
+                            self.model(inputs)
+                        if activation_cache[i]:
+                            class_scores[class_idx] = torch.stack(activation_cache[i]).mean(0)
+
+                # Update importance scores with class information
+                scores = network_scores.clone()
+                if class_scores:
+                    for ch_idx in range(scores.size(0)):
+                        max_class_score = max((s[ch_idx].item() for s in class_scores.values()), default=0)
+                        if max_class_score > scores[ch_idx].item():
+                            scores[ch_idx] = max_class_score
+                            
+                layer_scores.append(scores)
+
+            # Reduce to group importance
+            if layer_scores:
+                # Get reference size from first layer
+                reduced_imp = torch.zeros_like(layer_scores[0])
+                valid_scores = 0
+                
+                # Average scores across layers
+                for scores in layer_scores:
+                    if scores.size(0) == reduced_imp.size(0):
+                        reduced_imp += scores
+                        valid_scores += 1
+                        
+                if valid_scores > 0:
+                    reduced_imp /= valid_scores
+                    return reduced_imp
+
+        finally:
+            for handle in handles:
+                handle.remove()
+
+        return None
+    
 class BNScaleImportance(GroupMagnitudeImportance):
     """Learning Efficient Convolutional Networks through Network Slimming, 
     https://arxiv.org/abs/1708.06519

@@ -10,6 +10,7 @@ Copyright (C) 2021 Sovrasov V. - All Rights Reserved
 
 import numpy as np
 import torch.nn as nn
+import brevitas.nn as qnn
 import torch
 
 try:
@@ -350,7 +351,12 @@ MODULES_MAPPING = {
     nn.RNNCell: rnn_cell_flops_counter_hook,
     nn.LSTMCell: rnn_cell_flops_counter_hook,
     nn.GRUCell: rnn_cell_flops_counter_hook,
-    nn.MultiheadAttention: multihead_attention_counter_hook
+    nn.MultiheadAttention: multihead_attention_counter_hook,
+    
+    qnn.QuantConv2d: conv_flops_counter_hook,
+    qnn.QuantLinear: linear_flops_counter_hook,
+    qnn.QuantReLU: relu_flops_counter_hook,
+    qnn.QuantIdentity: empty_flops_counter_hook,
 }
 
 if has_timm:
