@@ -1,19 +1,29 @@
 import torch
 import time
 from finetune import evaluate, finetune, get_dataloaders
-from models.LeNet5 import QuantizedLeNet5_8bit
 from torch_pruning.utils import utils
 from torch_pruning.pruner import importance
 from torch_pruning.pruner.algorithms import base_pruner
+from models import *
 
+def save_pruned_model(model, path, pruning_history=None):
+    """Save a pruned model including its structure and pruning history"""
+    save_dict = {
+        'state_dict': model.state_dict(),
+        'model_class': model.__class__.__name__,
+        'pruning_history': pruning_history
+    }
+    torch.save(save_dict, path)
+    
 pruning_config = {
-    'model': QuantizedLeNet5_8bit(),
-    'state_dict': 'models/weight/LeNet5_quantized8.pth',
+    'model': QuantResNet50(),
+    'state_dict': 'models/weights/resnet50_w8a8.pth',
     'example_inputs': torch.randn(1, 3, 32, 32),
-    'target_pruning_ratio': 0.8,
-    'iterative_steps': 4,
-    'round_to': 8,
+    'target_pruning_ratio': 0.9,
+    'iterative_steps': 15,
     'epochs': 10,
+    'round_to': 8,
+    'quant': True
 }
 
 def iterative_pruning():
@@ -80,8 +90,12 @@ def iterative_pruning():
             'accuracy_after_finetuning': best_acc,
             'finetune_time': finetune_time
         })
-        
-        torch.save(model, f'pruned_model_step_{i+1}.pth')
+        if pruning_config['quant']:
+            # Inside your iterative_pruning function
+            pruning_history = pruner.pruning_history()
+            save_pruned_model(model, f'pruned_model_step_{i+1}.pth', pruning_history)
+        else:
+            torch.save(model.state_dict(), f'pruned_model_step_{i+1}.pth')
     
 
     output_log.append("\n" + "="*50 + "\n")

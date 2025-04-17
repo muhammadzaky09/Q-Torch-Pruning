@@ -29,5 +29,6 @@ output
 acc.png
 pretrained
 data
-
+results/
 cache/
+models/weights/

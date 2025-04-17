@@ -19,6 +19,22 @@ try:
 except:
     has_timm = False
 
+def get_tensor_elements_count(tensor):
+    """Helper function to get the number of elements in a tensor, handling different tensor types"""
+    if hasattr(tensor, 'numel'):
+        return tensor.numel()
+    elif hasattr(tensor, 'value') and hasattr(tensor.value, 'numel'):
+        # For Brevitas IntQuantTensor which wraps values
+        return tensor.value.numel()
+    elif hasattr(tensor, 'shape'):
+        # Fallback for tensors that have shape but no numel
+        import numpy as np
+        return np.prod(tensor.shape)
+    else:
+        # Last resort fallback
+        print(f"Warning: Unknown tensor type {type(tensor)}, returning 0")
+        return 0
+    
 @torch.no_grad()
 def count_ops_and_params(model, example_inputs, layer_wise=False):
     global CUSTOM_MODULES_MAPPING
@@ -61,7 +77,7 @@ def upsample_flops_counter_hook(module, input, output):
 
 
 def relu_flops_counter_hook(module, input, output):
-    active_elements_count = output.numel()
+    active_elements_count = get_tensor_elements_count(output)
     module.__flops__ += int(active_elements_count)
 
 
@@ -75,20 +91,19 @@ def linear_flops_counter_hook(module, input, output):
 
 def pool_flops_counter_hook(module, input, output):
     input = input[0]
-    module.__flops__ += int(np.prod(input.shape))
+    module.__flops__ += int(get_tensor_elements_count(input))
 
 
 def bn_flops_counter_hook(module, input, output):
     input = input[0]
-
-    batch_flops = np.prod(input.shape)
+    batch_flops = get_tensor_elements_count(input)
     if module.affine:
         batch_flops *= 2
     module.__flops__ += int(batch_flops)
 
 def ln_flops_counter_hook(module, input, output):
     input = input[0]
-    batch_flops = np.prod(input.shape)
+    batch_flops = get_tensor_elements_count(input)
     if module.elementwise_affine:
         batch_flops *= 2
     module.__flops__ += int(batch_flops)
@@ -96,6 +111,12 @@ def ln_flops_counter_hook(module, input, output):
 def conv_flops_counter_hook(conv_module, input, output):
     # Can have multiple inputs, getting the first one
     input = input[0]
+    
+    # Handle quantized tensors
+    if hasattr(input, 'value'):
+        input = input.value
+    if hasattr(output, 'value'):
+        output = output.value
 
     batch_size = input.shape[0]
     output_dims = list(output.shape[2:])
