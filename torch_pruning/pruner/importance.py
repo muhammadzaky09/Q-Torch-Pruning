@@ -286,6 +286,7 @@ class GroupActivationImportance:
         self.batch_size = batch_size
         self.num_samples = num_samples
         self.critical_percentile = critical_percentile
+        self.device = next(model.parameters()).device
         
         
 
@@ -409,6 +410,7 @@ class GroupActivationImportance:
             net_samples = random.sample(range(len(self.dataset)), min(self.num_samples, len(self.dataset)))
             net_subset = Subset(self.dataset, net_samples)
             for inputs, _ in DataLoader(net_subset, batch_size=self.batch_size):
+                inputs = inputs.to(self.device)
                 self.model(inputs)
 
             layer_scores = []
@@ -428,6 +430,7 @@ class GroupActivationImportance:
                     if class_samples:
                         class_subset = Subset(self.dataset, class_samples)
                         for inputs, _ in DataLoader(class_subset, batch_size=self.batch_size):
+                            inputs = inputs.to(self.device)
                             self.model(inputs)
                         if activation_cache[i]:
                             class_scores[class_idx] = torch.stack(activation_cache[i]).mean(0)

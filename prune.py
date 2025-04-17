@@ -4,7 +4,16 @@ from finetune import evaluate, finetune, get_dataloaders
 from torch_pruning.utils import utils
 from torch_pruning.pruner import importance
 from torch_pruning.pruner.algorithms import base_pruner
+from torchvision import datasets, transforms
 from models import *
+
+def load_cifar10_train_data():
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
+    ])
+    train_dataset = datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
+    return train_dataset
 
 def save_pruned_model(model, path, pruning_history=None):
     """Save a pruned model including its structure and pruning history"""
@@ -16,14 +25,14 @@ def save_pruned_model(model, path, pruning_history=None):
     torch.save(save_dict, path)
     
 pruning_config = {
-    'model': QuantResNet50(),
-    'state_dict': 'models/weights/resnet50_w8a8.pth',
+    'model': ResNet18(),
+    'state_dict': 'models/weights/ResNet18/resnet18.pth',
     'example_inputs': torch.randn(1, 3, 32, 32),
     'target_pruning_ratio': 0.9,
     'iterative_steps': 15,
     'epochs': 10,
     'round_to': 8,
-    'quant': True
+    'quant': False
 }
 
 def iterative_pruning():
@@ -42,7 +51,15 @@ def iterative_pruning():
     base_macs, base_params = utils.count_ops_and_params(model, example_inputs)
     print(f"Original model: {base_macs/1e9:.2f} GMACs, {base_params/1e6:.2f}M parameters")
     
-    imp = importance.GroupMagnitudeImportance(p=2)
+    # imp = importance.GroupMagnitudeImportance(p=2)
+    imp = importance.GroupActivationImportance(
+       model=model,             # Must be the same model you'll prune
+       dataset= load_cifar10_train_data(),         # Must provide (input, label) tuples
+       num_classes=10,          # Must match your dataset's classes
+       batch_size=32,           # Smaller may avoid memory issues
+       num_samples=32,          # Fewer samples = faster but less accurate
+       critical_percentile=10   # Threshold for critical neurons
+   )
     ignored_layers = []
     for m in model.modules():
         if isinstance(m, torch.nn.Linear) and m.out_features == 10:
@@ -95,7 +112,7 @@ def iterative_pruning():
             pruning_history = pruner.pruning_history()
             save_pruned_model(model, f'pruned_model_step_{i+1}.pth', pruning_history)
         else:
-            torch.save(model.state_dict(), f'pruned_model_step_{i+1}.pth')
+            torch.save(model, f'pruned_model_step_{i+1}.pth')
     
 
     output_log.append("\n" + "="*50 + "\n")
