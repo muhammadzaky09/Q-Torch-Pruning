@@ -1,1 +1,1 @@
-#Torch-Pruning but with capabilities of supporting Brevitas QAT Modules
+# Torch-Pruning but with capabilities of supporting Brevitas QAT Modules
