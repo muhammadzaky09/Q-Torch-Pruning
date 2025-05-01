@@ -72,7 +72,7 @@ class QuantLeNet5(nn.Module):
         out = F.max_pool2d(out, 2)
         out = self.act2(self.bn2(self.conv2(out)))
         out = F.max_pool2d(out, 2)
-        out = out.view(out.size(0), -1)
+        out = torch.flatten(out, 1)
         out = self.act3(self.bn3(self.fc1(out)))
         out = self.act4(self.bn4(self.fc2(out)))
         out = self.fc3(out)

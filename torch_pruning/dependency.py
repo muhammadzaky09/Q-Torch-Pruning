@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 from .pruner import function
 from . import _helpers, utils, ops
+ 
 
 __all__ = ["Dependency", "Group", "DependencyGraph"]
 
@@ -934,6 +935,8 @@ class DependencyGraph(object):
                 self._update_expand_index_mapping(node)
             if node.type == ops.OPTYPE.SLICE:
                 self._update_slice_index_mapping(node)
+            if node.type == ops.OPTYPE.QUANT_LINEAR:
+                self._update_flatten_index_mapping(node)
 
 
     def _update_slice_index_mapping(self, slice_node: Node):
@@ -995,17 +998,18 @@ class DependencyGraph(object):
                     node.module.offsets = offsets
 
     def _update_flatten_index_mapping(self, fc_node: Node):
-        if fc_node.type != ops.OPTYPE.LINEAR and fc_node.type != ops.OPTYPE.QUANT_LINEAR:
+        if fc_node.type not in (ops.OPTYPE.LINEAR, ops.OPTYPE.QUANT_LINEAR):
             return
-        # Rest of the function remains unchanged
         fc_in_features = fc_node.module.in_features
         feature_channels = 0
         for n in fc_node.inputs:
             recursive_depth = [0]
             feature_channels = self._infer_out_channels_recursively(n, recursive_depth)
-            if feature_channels is not None:
+            if feature_channels is not None:  # =0 if there is a residual connection to model inputs
                 break
-        if feature_channels is None:
+        if (
+            feature_channels is None
+        ):  # the first layer: https://github.com/VainF/Torch-Pruning/issues/21
             return
         stride = fc_in_features // feature_channels
         if stride > 1 and fc_in_features % feature_channels == 0:

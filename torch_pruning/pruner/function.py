@@ -320,28 +320,48 @@ class QuantLinearPruner(BasePruningFunc):
                     )
         
         return layer
-
-    def prune_in_channels(self, layer: qnn.QuantLinear, idxs: Sequence[int]) -> nn.Module:
+    
+    def prune_in_channels(self, layer: qnn.QuantLinear, idxs: list) -> nn.Module:
         keep_idxs = list(set(range(layer.in_features)) - set(idxs))
         keep_idxs.sort()
-        layer.in_features = layer.in_features - len(idxs)
-        
+        original_in_features = layer.in_features
+        layer.in_features = len(keep_idxs)
+
+        # Prune weight tensor and resize physically
         layer.weight = self._prune_parameter_and_grad(layer.weight, keep_idxs, 1)
-        
-        # Update Brevitas-specific input quantization parameters
+        with torch.no_grad():
+            layer.weight.data = layer.weight.data[:, :layer.in_features].contiguous()
+
+        # Handle input quantization scaling
         if hasattr(layer, 'input_quant'):
-            if hasattr(layer.input_quant, '_cached_inp_shape'):
-                layer.input_quant._cached_inp_shape = None  # Force recalculation
-            if hasattr(layer.input_quant, '_cached_out_shape'):
-                layer.input_quant._cached_out_shape = None  # Force recalculation
-        
-        # Reset any cached shapes inside layer itself
-        if hasattr(layer, '_cached_inp_shape'):
-            layer._cached_inp_shape = None
-        if hasattr(layer, '_cached_out_shape'):
-            layer._cached_out_shape = None
-        
+            if hasattr(layer.input_quant, 'scaling_impl'):
+                input_scaling = layer.input_quant.scaling_impl.scaling
+                if input_scaling is not None and input_scaling.size(0) == original_in_features:
+                    layer.input_quant.scaling_impl.scaling = torch.nn.Parameter(
+                        input_scaling[keep_idxs].contiguous()
+                    )
+            # Clear input quantization cache
+            layer.input_quant._cached_inp_quant_metadata = None
+
+        # Handle weight quantization parameters
+        if hasattr(layer, 'weight_quant'):
+            if hasattr(layer.weight_quant, 'scaling_impl'):
+                weight_scaling = layer.weight_quant.scaling_impl.scaling
+                if weight_scaling is not None and weight_scaling.dim() == 2:
+                    layer.weight_quant.scaling_impl.scaling = torch.nn.Parameter(
+                        weight_scaling[:, keep_idxs].contiguous()
+                    )
+            # Force reinitialization
+            layer.weight_quant.requires_recalc = True
+
+        # Clear all cached buffers
+        for buf in ['_cached_inp_quant_metadata', '_cached_w_quant_metadata']:
+            if hasattr(layer, buf):
+                delattr(layer, buf)
+
         return layer
+
+   
 
     def get_out_channels(self, layer):
         return layer.out_features

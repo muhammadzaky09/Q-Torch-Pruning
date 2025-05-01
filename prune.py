@@ -27,7 +27,7 @@ def save_pruned_model(model, path, pruning_history=None):
 pruning_config = {
     'model': LeNet5(),
     'state_dict': 'models/weights/LeNet5/LeNet5_new.pth',
-    'example_inputs': torch.randn(1, 1, 32, 32),
+    'example_inputs': torch.randn(1, 1, 28, 28),
     'target_pruning_ratio': 0.9,
     'iterative_steps': 15,
     'epochs': 10,

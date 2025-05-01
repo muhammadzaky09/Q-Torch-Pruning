@@ -1,4 +1,5 @@
 import torch
+import brevitas.nn as qnn
 import time
 from finetune import evaluate, finetune, get_dataloaders_mnist
 from torch_pruning.utils import utils
@@ -56,9 +57,9 @@ def iterative_pruning():
 #    )
     ignored_layers = []
     for m in model.modules():
-        if isinstance(m, torch.nn.Linear) and m.out_features == 10:
+        if (isinstance(m, torch.nn.Linear) or isinstance(m, qnn.QuantLinear)) and m.out_features == 10:
             ignored_layers.append(m)
-
+    
     pruner = base_pruner.BasePruner(
         model,
         example_inputs,
@@ -74,10 +75,19 @@ def iterative_pruning():
         print(f"\n{'='*50}\nPruning Step {i+1}/{pruning_config['iterative_steps']}")
         
         pruner.step()
-        
+        def hook_fn(module, input, output):
+            print(f"Module: {module.__class__.__name__}")
+            print(f"Input shape: {[i.shape for i in input]}")
+            print(f"Output shape: {output.shape if isinstance(output, torch.Tensor) else [o.shape for o in output]}")
+            
+        # Register hooks on the relevant modules
+        model.conv2.register_forward_hook(hook_fn)
+        model.fc1.register_forward_hook(hook_fn)
         current_ratio = pruner.per_step_pruning_ratio[pruner.current_step-1]
         print(f"Current pruning ratio: {current_ratio:.2f}")
-        
+        # In the prune_lenet5.py file, add before the error:
+        print("FC1 weight shape:", model.fc1.weight.shape)
+        print("FC1 in_features:", model.fc1.in_features)
         macs, params = utils.count_ops_and_params(model, example_inputs)
         compression_ratio = base_params / params
         print(f"Pruned model: {macs} MACs, {params} parameters")

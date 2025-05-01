@@ -139,6 +139,7 @@ class BasePruner:
             customized_pruners=customized_pruners,
             ignored_params=self.ignored_params,
         )
+        
 
         ###############################################
         # Iterative pruning
@@ -247,6 +248,10 @@ class BasePruner:
         initial_total_channels = 0
         initial_total_heads = 0
         for group in self.DG.get_all_groups(ignored_layers=self.ignored_layers, root_module_types=self.root_module_types):
+            output_path = "output.txt"
+            with open(output_path, "a", encoding="utf-8") as f:
+                print(group, file=f)
+
             _is_atten, qkv_layers = self._is_atten_group(group)
             if _is_atten:
                 group = self._downstream_node_as_root_if_attention(group)
