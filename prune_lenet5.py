@@ -1,19 +1,13 @@
 import torch
 import time
-from finetune import evaluate, finetune, get_dataloaders
+from finetune import evaluate, finetune, get_dataloaders_mnist
 from torch_pruning.utils import utils
 from torch_pruning.pruner import importance
 from torch_pruning.pruner.algorithms import base_pruner
 from torchvision import datasets, transforms
 from models import *
 
-def load_cifar10_train_data():
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
-    ])
-    train_dataset = datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
-    return train_dataset
+
 
 def save_pruned_model(model, path, pruning_history=None):
     """Save a pruned model including its structure and pruning history"""
@@ -25,21 +19,21 @@ def save_pruned_model(model, path, pruning_history=None):
     torch.save(save_dict, path)
     
 pruning_config = {
-    'model': LeNet5(),
-    'state_dict': 'models/weights/LeNet5/LeNet5_new.pth',
-    'example_inputs': torch.randn(1, 1, 32, 32),
+    'model': QuantLeNet5(),
+    'state_dict': 'models/weights/LeNet5-8/lenet_ckpt.pth',
+    'example_inputs': torch.randn(1, 1, 28, 28),
     'target_pruning_ratio': 0.9,
     'iterative_steps': 15,
     'epochs': 10,
     'round_to': 8,
-    'quant': False
+    'quant': True
 }
 
 def iterative_pruning():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     output_log = []
     # Get data
-    trainloader, testloader = get_dataloaders(batch_size=32)
+    trainloader, testloader = get_dataloaders_mnist(batch_size=32)
     
     # Load model (modify for CIFAR-10 - changing first conv and classifier)
     model = pruning_config['model']
@@ -49,17 +43,17 @@ def iterative_pruning():
     
     example_inputs = pruning_config['example_inputs'].to(device)
     base_macs, base_params = utils.count_ops_and_params(model, example_inputs)
-    print(f"Original model: {base_macs} GMACs, {base_params}M parameters")
+    print(f"Original model: {base_macs} MACs, {base_params} parameters")
     
-    # imp = importance.GroupMagnitudeImportance(p=2)
-    imp = importance.GroupActivationImportance(
-       model=model,             # Must be the same model you'll prune
-       dataset= load_cifar10_train_data(),         # Must provide (input, label) tuples
-       num_classes=10,          # Must match your dataset's classes
-       batch_size=32,           # Smaller may avoid memory issues
-       num_samples=32,          # Fewer samples = faster but less accurate
-       critical_percentile=10   # Threshold for critical neurons
-   )
+    imp = importance.GroupMagnitudeImportance(p=2)
+#     imp = importance.GroupActivationImportance(
+#        model=model,             # Must be the same model you'll prune
+#        dataset= load_cifar10_train_data(),         # Must provide (input, label) tuples
+#        num_classes=10,          # Must match your dataset's classes
+#        batch_size=32,           # Smaller may avoid memory issues
+#        num_samples=32,          # Fewer samples = faster but less accurate
+#        critical_percentile=10   # Threshold for critical neurons
+#    )
     ignored_layers = []
     for m in model.modules():
         if isinstance(m, torch.nn.Linear) and m.out_features == 10:
@@ -86,7 +80,7 @@ def iterative_pruning():
         
         macs, params = utils.count_ops_and_params(model, example_inputs)
         compression_ratio = base_params / params
-        print(f"Pruned model: {macs} GMACs, {params}M parameters")
+        print(f"Pruned model: {macs} MACs, {params} parameters")
         print(f"Compression ratio: {compression_ratio:.2f}x")
         
         acc_before = evaluate(model, testloader, device)
@@ -118,13 +112,13 @@ def iterative_pruning():
     output_log.append("\n" + "="*50 + "\n")
     output_log.append("Iterative Pruning Summary:\n")
     output_log.append("="*50 + "\n")
-    header = f"{'Step':^5}|{'Pruning Ratio':^15}|{'Params (M)'}|{'MACs (G)'}|{'Acc Before':^12}|{'Acc After':^12}|{'Compression':^12}\n"
+    header = f"{'Step':^5}|{'Pruning Ratio':^15}|{'Params'}|{'MACs'}|{'Acc Before':^12}|{'Acc After':^12}|{'Compression':^12}\n"
     separator = "-"*80 + "\n"
     output_log.append(header)
     output_log.append(separator)
     
     for r in results:
-        line = f"{r['step']:^5}|{r['pruning_ratio']:^15.2f}|{r['params']}|{r['macs']/1e9:^10.2f}|{r['accuracy_before_finetuning']:^12.2f}|{r['accuracy_after_finetuning']:^12.2f}|{r['compression_ratio']:^12.2f}x\n"
+        line = f"{r['step']:^5}|{r['pruning_ratio']:^15.2f}|{r['params']}|{r['macs']}|{r['accuracy_before_finetuning']:^12.2f}|{r['accuracy_after_finetuning']:^12.2f}|{r['compression_ratio']:^12.2f}x\n"
         output_log.append(line)
     
 

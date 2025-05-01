@@ -1,34 +1,84 @@
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.optim as optim
-import torch.backends.cudnn as cudnn
-import torch
-import torchvision
-import torchvision.transforms as transforms
 
-import os
+import brevitas.nn as qnn
+from brevitas.quant import Int8WeightPerTensorFloat
+from brevitas.quant import Int8ActPerTensorFloat
+from brevitas.quant import Int16Bias
 import argparse
-
-class LeNet5(nn.Module):
-    def __init__(self, num_classes=10):
-        super(LeNet5, self).__init__()
-        self.conv1 = nn.Conv2d(1, 6, kernel_size=5)
-        self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.conv2 = nn.Conv2d(6, 16, kernel_size=5)
-        self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.fc1 = nn.Linear(16 * 4 * 4, 120)
-        self.fc2 = nn.Linear(120, 84)
-        self.fc3 = nn.Linear(84, num_classes)
+import torchvision.transforms as transforms
+import torchvision
+import torch.optim as optim
+import os
+class QuantLeNet5(nn.Module):
+    def __init__(self, num_classes=10, weight_bit_width=8, act_bit_width=8):
+        super(QuantLeNet5, self).__init__()
+        
+        # First conv layer
+        self.conv1 = qnn.QuantConv2d(
+            1, 6, kernel_size=5, stride=1, padding=0, bias=False,
+            weight_quant=Int8WeightPerTensorFloat
+        )
+        self.bn1 = nn.BatchNorm2d(6)
+        self.act1 = qnn.QuantReLU(
+            act_quant=Int8ActPerTensorFloat,
+            return_quant_tensor=True
+        )
+        
+        # Second conv layer
+        self.conv2 = qnn.QuantConv2d(
+            6, 16, kernel_size=5, stride=1, padding=0, bias=False,
+            weight_quant=Int8WeightPerTensorFloat
+        )
+        self.bn2 = nn.BatchNorm2d(16)
+        self.act2 = qnn.QuantReLU(
+            act_quant=Int8ActPerTensorFloat,
+            return_quant_tensor=True
+        )
+        
+        # Fully connected layers
+        self.fc1 = qnn.QuantLinear(
+            16 * 4 * 4, 120, bias=True, 
+            weight_quant=Int8WeightPerTensorFloat,
+            bias_quant=Int16Bias
+        )
+        self.bn3 = nn.BatchNorm1d(120)
+        self.act3 = qnn.QuantReLU(
+            act_quant=Int8ActPerTensorFloat,
+            return_quant_tensor=True
+        )
+        
+        self.fc2 = qnn.QuantLinear(
+            120, 84, bias=True,
+            weight_quant=Int8WeightPerTensorFloat,
+            bias_quant=Int16Bias
+        )
+        self.bn4 = nn.BatchNorm1d(84)
+        self.act4 = qnn.QuantReLU(
+            act_quant=Int8ActPerTensorFloat,
+            return_quant_tensor=True
+        )
+        
+        self.fc3 = qnn.QuantLinear(
+            84, num_classes, bias=True,
+            weight_quant=Int8WeightPerTensorFloat,
+            bias_quant=Int16Bias
+        )
 
     def forward(self, x):
-        x = self.pool1(F.relu(self.conv1(x)))
-        x = self.pool2(F.relu(self.conv2(x)))
-        x = x.view(x.size(0), -1)  # Flatten
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = self.fc3(x)
-        return x
-
+        # First conv block
+        out = self.act1(self.bn1(self.conv1(x)))
+        out = F.max_pool2d(out, 2)
+        out = self.act2(self.bn2(self.conv2(out)))
+        out = F.max_pool2d(out, 2)
+        out = out.view(out.size(0), -1)
+        out = self.act3(self.bn3(self.fc1(out)))
+        out = self.act4(self.bn4(self.fc2(out)))
+        out = self.fc3(out)
+        
+        return out
+    
 # parser = argparse.ArgumentParser(description='PyTorch MNIST Training')
 # parser.add_argument('--lr', default=0.01, type=float, help='learning rate')
 # parser.add_argument('--resume', '-r', action='store_true',
@@ -64,21 +114,10 @@ class LeNet5(nn.Module):
 
 # # Model
 # print('==> Building model..')
-# net = LeNet5()
-
+# net = QuantLeNet5()
+# net.load_state_dict(torch.load('models/weights/LeNet5-8/lenet_ckpt.pth'))
 # net = net.to(device)
-# if device == 'cuda':
-#     net = torch.nn.DataParallel(net)
-#     cudnn.benchmark = True
 
-# if args.resume:
-#     # Load checkpoint.
-#     print('==> Resuming from checkpoint..')
-#     assert os.path.isdir('checkpoint'), 'Error: no checkpoint directory found!'
-#     checkpoint = torch.load('./checkpoint/lenet_ckpt.pth')
-#     net.load_state_dict(checkpoint['net'])
-#     best_acc = checkpoint['acc']
-#     start_epoch = checkpoint['epoch']
 
 # criterion = nn.CrossEntropyLoss()
 # optimizer = optim.SGD(net.parameters(), lr=args.lr,
@@ -102,6 +141,7 @@ class LeNet5(nn.Module):
 #     correct = 0
 #     total = 0
 #     for batch_idx, (inputs, targets) in enumerate(trainloader):
+#         print(inputs[0].shape)
 #         inputs, targets = inputs.to(device), targets.to(device)
 #         optimizer.zero_grad()
 #         outputs = net(inputs)
@@ -142,18 +182,14 @@ class LeNet5(nn.Module):
 #     acc = 100.*correct/total
 #     if acc > best_acc:
 #         print('\nSaving..')
-#         state = {
-#             'net': net.state_dict(),
-#             'acc': acc,
-#             'epoch': epoch,
-#         }
+#         state = net.state_dict()
 #         if not os.path.isdir('checkpoint'):
 #             os.mkdir('checkpoint')
 #         torch.save(state, './checkpoint/lenet_ckpt.pth')
 #         best_acc = acc
 
 
-# for epoch in range(start_epoch, start_epoch+100):
-#     train(epoch)
+# for epoch in range(start_epoch, start_epoch+1):
+#     # train(epoch)
 #     test(epoch)
-#     scheduler.step()
+#     # scheduler.step()

@@ -83,7 +83,12 @@ def relu_flops_counter_hook(module, input, output):
 
 def linear_flops_counter_hook(module, input, output):
     input = input[0]
-    # pytorch checks dimensions, so here we don't care much
+    if hasattr(input, 'value'):
+        input = input.value 
+    if hasattr(output, 'value'):
+        output = output.value
+        
+    # Continue with regular counting
     output_last_dim = output.shape[-1]
     bias_flops = output_last_dim if module.bias is not None else 0
     module.__flops__ += int(np.prod(input.shape) * output_last_dim + bias_flops)

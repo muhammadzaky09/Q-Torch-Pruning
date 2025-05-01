@@ -328,6 +328,19 @@ class QuantLinearPruner(BasePruningFunc):
         
         layer.weight = self._prune_parameter_and_grad(layer.weight, keep_idxs, 1)
         
+        # Update Brevitas-specific input quantization parameters
+        if hasattr(layer, 'input_quant'):
+            if hasattr(layer.input_quant, '_cached_inp_shape'):
+                layer.input_quant._cached_inp_shape = None  # Force recalculation
+            if hasattr(layer.input_quant, '_cached_out_shape'):
+                layer.input_quant._cached_out_shape = None  # Force recalculation
+        
+        # Reset any cached shapes inside layer itself
+        if hasattr(layer, '_cached_inp_shape'):
+            layer._cached_inp_shape = None
+        if hasattr(layer, '_cached_out_shape'):
+            layer._cached_out_shape = None
+        
         return layer
 
     def get_out_channels(self, layer):

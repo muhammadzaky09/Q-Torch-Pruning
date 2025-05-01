@@ -4,6 +4,28 @@ import torch.optim as optim
 import torchvision
 import torchvision.transforms as transforms
 
+def get_dataloaders_mnist(batch_size=128):
+    transform_train = transforms.Compose([
+    transforms.RandomCrop(28, padding=4),
+    transforms.ToTensor(),
+    transforms.Normalize((0.1307,), (0.3081,)),
+    ])
+
+    transform_test = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.1307,), (0.3081,)),
+    ])
+
+    trainset = torchvision.datasets.MNIST(
+        root='./data', train=True, download=True, transform=transform_train)
+    trainloader = torch.utils.data.DataLoader(
+        trainset, batch_size=128, shuffle=True, num_workers=2)
+
+    testset = torchvision.datasets.MNIST(
+        root='./data', train=False, download=True, transform=transform_test)
+    testloader = torch.utils.data.DataLoader(
+        testset, batch_size=100, shuffle=False, num_workers=2)
+    return trainloader, testloader
 def get_dataloaders(batch_size=128):
     transform_train = transforms.Compose([
         transforms.RandomCrop(32, padding=4),

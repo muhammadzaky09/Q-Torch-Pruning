@@ -995,18 +995,17 @@ class DependencyGraph(object):
                     node.module.offsets = offsets
 
     def _update_flatten_index_mapping(self, fc_node: Node):
-        if fc_node.type != ops.OPTYPE.LINEAR:
+        if fc_node.type != ops.OPTYPE.LINEAR and fc_node.type != ops.OPTYPE.QUANT_LINEAR:
             return
+        # Rest of the function remains unchanged
         fc_in_features = fc_node.module.in_features
         feature_channels = 0
         for n in fc_node.inputs:
             recursive_depth = [0]
             feature_channels = self._infer_out_channels_recursively(n, recursive_depth)
-            if feature_channels is not None:  # =0 if there is a residual connection to model inputs
+            if feature_channels is not None:
                 break
-        if (
-            feature_channels is None
-        ):  # the first layer: https://github.com/VainF/Torch-Pruning/issues/21
+        if feature_channels is None:
             return
         stride = fc_in_features // feature_channels
         if stride > 1 and fc_in_features % feature_channels == 0:
