@@ -44,13 +44,13 @@ def is_scalar(x):
 
 
 class _FlattenIndexMapping(object):
+    
     def __init__(self, stride=1, reverse=False):
         self._stride = stride
         self.reverse = reverse
 
     def __call__(self, idxs: _HybridIndex):
         new_idxs = []
-        
         if self.reverse == True:
             for i in idxs:
                 new_idxs.append( _HybridIndex( idx = (i.idx // self._stride), root_idx=i.root_idx ) )

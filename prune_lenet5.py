@@ -18,7 +18,13 @@ def save_pruned_model(model, path, pruning_history=None):
         'pruning_history': pruning_history
     }
     torch.save(save_dict, path)
-    
+def load_mnist_data():
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.1307,), (0.3081,))
+    ])
+    train_dataset = datasets.MNIST(root='./data', train=True, download=True, transform=transform)
+    return train_dataset
 pruning_config = {
     'model': QuantLeNet5(),
     'state_dict': 'models/weights/LeNet5-8/lenet_ckpt.pth',
@@ -29,9 +35,20 @@ pruning_config = {
     'round_to': 8,
     'quant': True
 }
+# pruning_config = {
+#     'model': LeNet5(),
+#     'state_dict': 'models/weights/LeNet5/LeNet5_new.pth',
+#     'example_inputs': torch.randn(1, 1, 28, 28),
+#     'target_pruning_ratio': 0.9,
+#     'iterative_steps': 15,
+#     'epochs': 10,
+#     'round_to': 8,
+#     'quant': False
+# }
+
 
 def iterative_pruning():
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cpu")
     output_log = []
     # Get data
     trainloader, testloader = get_dataloaders_mnist(batch_size=32)
@@ -46,15 +63,15 @@ def iterative_pruning():
     base_macs, base_params = utils.count_ops_and_params(model, example_inputs)
     print(f"Original model: {base_macs} MACs, {base_params} parameters")
     
-    imp = importance.GroupMagnitudeImportance(p=2)
-#     imp = importance.GroupActivationImportance(
-#        model=model,             # Must be the same model you'll prune
-#        dataset= load_cifar10_train_data(),         # Must provide (input, label) tuples
-#        num_classes=10,          # Must match your dataset's classes
-#        batch_size=32,           # Smaller may avoid memory issues
-#        num_samples=32,          # Fewer samples = faster but less accurate
-#        critical_percentile=10   # Threshold for critical neurons
-#    )
+    # imp = importance.GroupMagnitudeImportance(p=1)
+    imp = importance.GroupActivationImportance(
+       model=model,             # Must be the same model you'll prune
+       dataset= load_mnist_data(),         # Must provide (input, label) tuples
+       num_classes=10,          # Must match your dataset's classes
+       batch_size=32,           # Smaller may avoid memory issues
+       num_samples=32,          # Fewer samples = faster but less accurate
+       critical_percentile=10   # Threshold for critical neurons
+   )
     ignored_layers = []
     for m in model.modules():
         if (isinstance(m, torch.nn.Linear) or isinstance(m, qnn.QuantLinear)) and m.out_features == 10:
@@ -75,19 +92,9 @@ def iterative_pruning():
         print(f"\n{'='*50}\nPruning Step {i+1}/{pruning_config['iterative_steps']}")
         
         pruner.step()
-        def hook_fn(module, input, output):
-            print(f"Module: {module.__class__.__name__}")
-            print(f"Input shape: {[i.shape for i in input]}")
-            print(f"Output shape: {output.shape if isinstance(output, torch.Tensor) else [o.shape for o in output]}")
             
-        # Register hooks on the relevant modules
-        model.conv2.register_forward_hook(hook_fn)
-        model.fc1.register_forward_hook(hook_fn)
+
         current_ratio = pruner.per_step_pruning_ratio[pruner.current_step-1]
-        print(f"Current pruning ratio: {current_ratio:.2f}")
-        # In the prune_lenet5.py file, add before the error:
-        print("FC1 weight shape:", model.fc1.weight.shape)
-        print("FC1 in_features:", model.fc1.in_features)
         macs, params = utils.count_ops_and_params(model, example_inputs)
         compression_ratio = base_params / params
         print(f"Pruned model: {macs} MACs, {params} parameters")

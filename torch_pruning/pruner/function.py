@@ -235,8 +235,14 @@ class QuantConvPruner(BasePruningFunc):
     TARGET_MODULES = ops.TORCH_QUANT_CONV
 
     def prune_out_channels(self, layer: qnn.QuantConv2d, idxs: Sequence[int]) -> nn.Module:
+        """Prune output channels for QuantConv2d layers"""
+        print(f"QuantConvPruner: pruning out_channels from {layer.out_channels} by removing {len(idxs)} channels")
+        
+        # Keep indices that are not being pruned
         keep_idxs = list(set(range(layer.out_channels)) - set(idxs))
         keep_idxs.sort()
+        
+        # Update out_channels count
         layer.out_channels = layer.out_channels - len(idxs)
         
         if not layer.transposed:
@@ -265,11 +271,18 @@ class QuantConvPruner(BasePruningFunc):
                         torch.index_select(bit_width_tensor, 0, torch.LongTensor(keep_idxs).to(bit_width_tensor.device))
                     )
         
+        print(f"QuantConvPruner: out_channels after pruning = {layer.out_channels}")
         return layer
 
     def prune_in_channels(self, layer: qnn.QuantConv2d, idxs: Sequence[int]) -> nn.Module:
+        """Prune input channels for QuantConv2d layers"""
+        print(f"QuantConvPruner: pruning in_channels from {layer.in_channels} by removing {len(idxs)} channels")
+        
+        # Keep indices that are not being pruned
         keep_idxs = list(set(range(layer.in_channels)) - set(idxs))
         keep_idxs.sort()
+        
+        # Update in_channels count
         layer.in_channels = layer.in_channels - len(idxs)
         
         if layer.groups > 1:
@@ -281,7 +294,8 @@ class QuantConvPruner(BasePruningFunc):
             layer.weight = self._prune_parameter_and_grad(layer.weight, keep_idxs, 1)
         else:
             layer.weight = self._prune_parameter_and_grad(layer.weight, keep_idxs, 0)
-            
+        
+        print(f"QuantConvPruner: in_channels after pruning = {layer.in_channels}")
         return layer
 
     def get_out_channels(self, layer):
@@ -301,15 +315,21 @@ class QuantLinearPruner(BasePruningFunc):
     TARGET_MODULES = ops.TORCH_QUANT_LINEAR
     
     def prune_out_channels(self, layer: qnn.QuantLinear, idxs: Sequence[int]) -> nn.Module:
+        
+        # Keep indices that are not being pruned
         keep_idxs = list(set(range(layer.out_features)) - set(idxs))
         keep_idxs.sort()
+        
+        # Update out_features count
         layer.out_features = layer.out_features - len(idxs)
         
+        # Prune weight tensor
         layer.weight = self._prune_parameter_and_grad(layer.weight, keep_idxs, 0)
         
+        # Prune bias if it exists
         if layer.bias is not None:
             layer.bias = self._prune_parameter_and_grad(layer.bias, keep_idxs, 0)
-            
+        
         # Handle quantization parameters
         if hasattr(layer, 'weight_scaling_impl') and hasattr(layer.weight_scaling_impl, 'scaling_init'):
             if hasattr(layer.weight_scaling_impl.scaling_init, 'tensor'):
@@ -319,49 +339,57 @@ class QuantLinearPruner(BasePruningFunc):
                         torch.index_select(scaling_tensor, 0, torch.LongTensor(keep_idxs).to(scaling_tensor.device))
                     )
         
+
         return layer
     
-    def prune_in_channels(self, layer: qnn.QuantLinear, idxs: list) -> nn.Module:
+    def prune_in_channels(self, layer: qnn.QuantLinear, idxs: Sequence[int]) -> nn.Module:
+        
+        
+        # Keep indices that are not being pruned
         keep_idxs = list(set(range(layer.in_features)) - set(idxs))
         keep_idxs.sort()
-        original_in_features = layer.in_features
-        layer.in_features = len(keep_idxs)
-
-        # Prune weight tensor and resize physically
+        
+        # Update in_features count
+        layer.in_features = layer.in_features - len(idxs)
+        
+        # Prune weight tensor
         layer.weight = self._prune_parameter_and_grad(layer.weight, keep_idxs, 1)
-        with torch.no_grad():
-            layer.weight.data = layer.weight.data[:, :layer.in_features].contiguous()
-
+        
         # Handle input quantization scaling
         if hasattr(layer, 'input_quant'):
             if hasattr(layer.input_quant, 'scaling_impl'):
                 input_scaling = layer.input_quant.scaling_impl.scaling
-                if input_scaling is not None and input_scaling.size(0) == original_in_features:
+                if input_scaling is not None and input_scaling.size(0) == len(keep_idxs) + len(idxs):
+                    # Create a tensor for indexing that's on the same device
+                    index_tensor = torch.LongTensor(keep_idxs).to(input_scaling.device)
+                    # Select only the kept indices
                     layer.input_quant.scaling_impl.scaling = torch.nn.Parameter(
-                        input_scaling[keep_idxs].contiguous()
+                        torch.index_select(input_scaling, 0, index_tensor)
                     )
-            # Clear input quantization cache
-            layer.input_quant._cached_inp_quant_metadata = None
+            
+            # Clear cache if exists
+            if hasattr(layer.input_quant, '_cached_inp_quant_metadata'):
+                layer.input_quant._cached_inp_quant_metadata = None
 
         # Handle weight quantization parameters
         if hasattr(layer, 'weight_quant'):
             if hasattr(layer.weight_quant, 'scaling_impl'):
                 weight_scaling = layer.weight_quant.scaling_impl.scaling
                 if weight_scaling is not None and weight_scaling.dim() == 2:
+                    # Select only the kept indices for the input dimension
+                    index_tensor = torch.LongTensor(keep_idxs).to(weight_scaling.device)
                     layer.weight_quant.scaling_impl.scaling = torch.nn.Parameter(
-                        weight_scaling[:, keep_idxs].contiguous()
+                        torch.index_select(weight_scaling, 1, index_tensor)
                     )
+            
             # Force reinitialization
             layer.weight_quant.requires_recalc = True
 
         # Clear all cached buffers
-        for buf in ['_cached_inp_quant_metadata', '_cached_w_quant_metadata']:
-            if hasattr(layer, buf):
-                delattr(layer, buf)
-
+        for buf_name in ['_cached_inp_quant_metadata', '_cached_w_quant_metadata']:
+            if hasattr(layer, buf_name):
+                setattr(layer, buf_name, None)
         return layer
-
-   
 
     def get_out_channels(self, layer):
         return layer.out_features

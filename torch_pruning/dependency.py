@@ -5,7 +5,6 @@ import torch
 import torch.nn as nn
 from .pruner import function
 from . import _helpers, utils, ops
- 
 
 __all__ = ["Dependency", "Group", "DependencyGraph"]
 
@@ -829,7 +828,8 @@ class DependencyGraph(object):
 
             # 1. link grad_fns and modules
             if module is None:  # a new module
-                
+                name = grad_fn.name().lower() if hasattr(grad_fn, "name") else ""
+                print(f"[torch‑pruning] grad_fn type={type(grad_fn)}  name=\"{name}\"")
                 if not hasattr(grad_fn, "name"):
                     # we treat all unknwon modules as element-wise operations by default,
                     # which does not modify the #dimension/#channel of features.
@@ -853,7 +853,7 @@ class DependencyGraph(object):
                 elif "expand" in grad_fn.name().lower():
                     module = ops._ExpandOp(self._op_id)
                     self._op_id+=1
-                elif "view" in grad_fn.name().lower() or 'reshape' in grad_fn.name().lower():
+                elif any(k in grad_fn.name().lower() for k in ("view", "reshape", "alias")):
                     module = ops._ReshapeOp(self._op_id)
                     self._op_id+=1
                 elif "slice" in grad_fn.name().lower() and "copyslices" not in grad_fn.name().lower():
@@ -935,8 +935,6 @@ class DependencyGraph(object):
                 self._update_expand_index_mapping(node)
             if node.type == ops.OPTYPE.SLICE:
                 self._update_slice_index_mapping(node)
-            if node.type == ops.OPTYPE.QUANT_LINEAR:
-                self._update_flatten_index_mapping(node)
 
 
     def _update_slice_index_mapping(self, slice_node: Node):
@@ -998,7 +996,7 @@ class DependencyGraph(object):
                     node.module.offsets = offsets
 
     def _update_flatten_index_mapping(self, fc_node: Node):
-        if fc_node.type not in (ops.OPTYPE.LINEAR, ops.OPTYPE.QUANT_LINEAR):
+        if fc_node.type != ops.OPTYPE.LINEAR:
             return
         fc_in_features = fc_node.module.in_features
         feature_channels = 0
@@ -1279,4 +1277,3 @@ class DependencyGraph(object):
                     return node_1.module.split_sizes[i]
         recursive_depth = [0]
         return self._infer_out_channels_recursively(node_1, recursive_depth)
-
